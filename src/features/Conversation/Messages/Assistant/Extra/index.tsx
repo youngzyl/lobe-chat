@@ -1,14 +1,13 @@
-import { ModelPerformance, ModelUsage } from '@lobechat/types';
+import { LOADING_FLAT } from '@lobechat/const';
+import { type ModelPerformance, type ModelUsage } from '@lobechat/types';
+import { Flexbox } from '@lobehub/ui';
 import { memo } from 'react';
-import { Flexbox } from 'react-layout-kit';
 
-import { LOADING_FLAT } from '@/const/message';
-import ExtraContainer from '@/features/Conversation/components/Extras/ExtraContainer';
-import TTS from '@/features/Conversation/components/Extras/TTS';
-import Translate from '@/features/Conversation/components/Extras/Translate';
-import Usage from '@/features/Conversation/components/Extras/Usage';
-import { useChatStore } from '@/store/chat';
-import { messageStateSelectors } from '@/store/chat/selectors';
+import { messageStateSelectors, useConversationStore } from '../../../store';
+import ExtraContainer from '../../components/Extras/ExtraContainer';
+import TTS from '../../components/Extras/TTS';
+import Translate from '../../components/Extras/Translate';
+import Usage from '../../components/Extras/Usage';
 
 interface AssistantMessageExtraProps {
   content: string;
@@ -23,7 +22,7 @@ interface AssistantMessageExtraProps {
 
 export const AssistantMessageExtra = memo<AssistantMessageExtraProps>(
   ({ extra, id, content, performance, usage, tools, provider, model }) => {
-    const loading = useChatStore(messageStateSelectors.isMessageGenerating(id));
+    const loading = useConversationStore(messageStateSelectors.isMessageGenerating(id));
 
     return (
       <Flexbox gap={8} style={{ marginTop: !!tools?.length ? 8 : 4 }}>

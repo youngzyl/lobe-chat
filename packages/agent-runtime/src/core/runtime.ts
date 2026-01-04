@@ -24,11 +24,16 @@ import {
  */
 export class AgentRuntime {
   private executors: Record<AgentInstruction['type'], InstructionExecutor>;
+  private operationId?: string;
+  private getOperation?: RuntimeConfig['getOperation'];
 
   constructor(
     private agent: Agent,
     private config: RuntimeConfig = {},
   ) {
+    this.operationId = config.operationId;
+    this.getOperation = config.getOperation;
+
     // Build executors with priority: agent.executors > config.executors > built-in
     this.executors = {
       call_llm: this.createCallLLMExecutor(),
@@ -42,6 +47,28 @@ export class AgentRuntime {
       // Agent provided executors have highest priority
       ...(agent.executors as any),
     };
+  }
+
+  /**
+   * Get operation context (sessionId, topicId, etc.)
+   * Returns the business context captured by the operation
+   */
+  getContext() {
+    if (!this.operationId || !this.getOperation) {
+      return undefined;
+    }
+    return this.getOperation(this.operationId).context;
+  }
+
+  /**
+   * Get operation abort controller
+   * Returns the AbortController for cancellation
+   */
+  getAbortController(): AbortController | undefined {
+    if (!this.operationId || !this.getOperation) {
+      return undefined;
+    }
+    return this.getOperation(this.operationId).abortController;
   }
 
   /**
@@ -143,13 +170,14 @@ export class AgentRuntime {
 
         // Special handling for batch tool execution
         if (instruction.type === 'call_tools_batch') {
-          result = await this.executeToolsBatch(instruction as any, currentState);
+          result = await this.executeToolsBatch(instruction as any, currentState, runtimeContext);
         } else {
           const executor = this.executors[instruction.type as keyof typeof this.executors];
           if (!executor) {
             throw new Error(`No executor found for instruction type: ${instruction.type}`);
           }
-          result = await executor(instruction, currentState);
+          // Pass runtimeContext to executor so it can access stepContext
+          result = await executor(instruction, currentState, runtimeContext);
         }
 
         // Accumulate events
@@ -194,6 +222,7 @@ export class AgentRuntime {
     approvedToolCall: ChatToolPayload,
   ): Promise<{ events: AgentEvent[]; newState: AgentState; nextContext?: AgentRuntimeContext }> {
     const context: AgentRuntimeContext = {
+      operationId: this.operationId,
       payload: { approvedToolCall },
       phase: 'human_approved_tool',
       session: this.createSessionContext(state),
@@ -289,10 +318,11 @@ export class AgentRuntime {
     }
 
     // Otherwise, just return the resumed state
+    const initialContext = this.createInitialContext(newState);
     return {
       events: [resumeEvent],
       newState,
-      nextContext: this.createInitialContext(newState),
+      nextContext: initialContext,
     };
   }
 
@@ -350,7 +380,7 @@ export class AgentRuntime {
    * @returns Complete AgentState with defaults filled in
    */
   static createInitialState(
-    partialState?: Partial<AgentState> & { sessionId: string },
+    partialState?: Partial<AgentState> & { operationId: string },
   ): AgentState {
     const now = new Date().toISOString();
 
@@ -365,7 +395,7 @@ export class AgentRuntime {
       toolManifestMap: {},
       usage: AgentRuntime.createDefaultUsage(),
       // User provided values override defaults
-      ...(partialState || { sessionId: '' }),
+      ...(partialState || { operationId: '' }),
     };
   }
 
@@ -439,6 +469,7 @@ export class AgentRuntime {
 
         // Provide next context based on LLM result
         const nextContext: AgentRuntimeContext = {
+          operationId: this.operationId,
           payload: {
             hasToolCalls: toolCalls.length > 0,
             result: { content: assistantContent, tool_calls: toolCalls },
@@ -511,6 +542,7 @@ export class AgentRuntime {
 
       // Provide next context for tool result
       const nextContext: AgentRuntimeContext = {
+        operationId: this.operationId,
         payload: {
           result,
           toolCall,
@@ -539,8 +571,8 @@ export class AgentRuntime {
 
       const events: AgentEvent[] = [
         {
+          operationId: newState.operationId,
           pendingToolsCalling,
-          sessionId: newState.sessionId,
           type: 'human_approve_required',
         },
       ];
@@ -565,8 +597,8 @@ export class AgentRuntime {
       const events: AgentEvent[] = [
         {
           metadata,
+          operationId: newState.operationId,
           prompt,
-          sessionId: newState.sessionId,
           type: 'human_prompt_required',
         },
       ];
@@ -592,9 +624,9 @@ export class AgentRuntime {
         {
           metadata,
           multi,
+          operationId: newState.operationId,
           options,
           prompt,
-          sessionId: newState.sessionId,
           type: 'human_select_required',
         },
       ];
@@ -632,6 +664,7 @@ export class AgentRuntime {
   private async executeToolsBatch(
     instruction: AgentInstructionCallToolsBatch,
     baseState: AgentState,
+    context?: AgentRuntimeContext,
   ): Promise<{
     events: AgentEvent[];
     newState: AgentState;
@@ -647,6 +680,7 @@ export class AgentRuntime {
           type: 'call_tool',
         } as AgentInstructionCallTool,
         structuredClone(baseState), // Each tool starts from the same base state
+        context, // Pass context to each tool call
       ),
     );
 
@@ -676,9 +710,16 @@ export class AgentRuntime {
     const allEvents: AgentEvent[] = [];
 
     // Merge all tool messages in order
+    // Get the set of tool_call_ids that already exist in baseState to avoid duplicates
+    const existingToolCallIds = new Set(
+      baseState.messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id),
+    );
+
     for (const result of results) {
-      // Extract tool role messages
-      const toolMessages = result.newState.messages.filter((m) => m.role === 'tool');
+      // Extract only NEW tool role messages (not already in baseState)
+      const toolMessages = result.newState.messages.filter(
+        (m) => m.role === 'tool' && !existingToolCallIds.has(m.tool_call_id),
+      );
       newState.messages.push(...toolMessages);
 
       // Merge events
@@ -726,6 +767,7 @@ export class AgentRuntime {
       events: allEvents,
       newState,
       nextContext: {
+        operationId: this.operationId,
         payload: {
           parentMessageId: lastParentMessageId,
           toolCount: results.length,
@@ -792,6 +834,7 @@ export class AgentRuntime {
           events: [warningEvent],
           newState,
           nextContext: {
+            operationId: this.operationId,
             payload: { error: warningEvent.error, isCostWarning: true },
             phase: 'error' as const,
             session: this.createSessionContext(newState),
@@ -803,11 +846,12 @@ export class AgentRuntime {
 
   /**
    * Create session context metadata - reusable helper
+   * Note: Uses sessionId in context for backwards compatibility with AgentRuntimeContext
    */
   private createSessionContext(state: AgentState) {
     return {
       messageCount: state.messages.length,
-      sessionId: state.sessionId,
+      sessionId: state.operationId,
       status: state.status,
       stepCount: state.stepCount,
     };
@@ -821,6 +865,7 @@ export class AgentRuntime {
 
     if (lastMessage?.role === 'user') {
       return {
+        operationId: this.operationId,
         payload: {
           isFirstMessage: state.messages.length === 1,
           message: lastMessage,
@@ -831,6 +876,7 @@ export class AgentRuntime {
     }
 
     return {
+      operationId: this.operationId,
       payload: undefined,
       phase: 'init',
       session: this.createSessionContext(state),

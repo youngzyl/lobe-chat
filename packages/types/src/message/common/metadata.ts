@@ -75,7 +75,12 @@ export const ModelPerformanceSchema = z.object({
   latency: z.number().optional(),
 });
 
-export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema);
+export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
+  collapsed: z.boolean().optional(),
+  inspectExpanded: z.boolean().optional(),
+  isMultimodal: z.boolean().optional(),
+  isSupervisor: z.boolean().optional(),
+});
 
 export interface ModelUsage extends ModelTokensUsage {
   /**
@@ -106,5 +111,40 @@ export interface ModelPerformance {
 export interface MessageMetadata extends ModelUsage, ModelPerformance {
   activeBranchIndex?: number;
   activeColumn?: boolean;
+  finishType?: string;
+  /**
+   * Message collapse state
+   * true: collapsed, false/undefined: expanded
+   */
+  collapsed?: boolean;
+  /**
+   * Tool inspect expanded state
+   * true: expanded, false/undefined: collapsed
+   */
+  inspectExpanded?: boolean;
   compare?: boolean;
+  usage?: ModelUsage;
+  performance?: ModelPerformance;
+  /**
+   * Flag indicating if message content is multimodal (serialized MessageContentPart[])
+   */
+  isMultimodal?: boolean;
+  // message content is multimodal, display content in the streaming, won't save to db
+  tempDisplayContent?: string;
+  /**
+   * Flag indicating if message is from the Supervisor agent in group orchestration
+   * Used by conversation-flow to transform role to 'supervisor' for UI rendering
+   */
+  isSupervisor?: boolean;
+  /**
+   * Flag indicating if message is pinned (excluded from compression)
+   */
+  pinned?: boolean;
+  /**
+   * Task instruction (for role='task' messages)
+   * The instruction given by supervisor to the agent
+   * Thread's sourceMessageId links back to this message for status tracking
+   */
+  instruction?: string;
+  taskTitle?: string;
 }

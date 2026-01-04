@@ -1,11 +1,11 @@
-import { ElectronAppState } from '@lobechat/electron-client-ipc';
-import { SWRResponse } from 'swr';
-import { StateCreator } from 'zustand/vanilla';
+import { type ElectronAppState } from '@lobechat/electron-client-ipc';
+import { type SWRResponse } from 'swr';
+import { type StateCreator } from 'zustand/vanilla';
 
+import { globalAgentContextManager } from '@/helpers/GlobalAgentContextManager';
 import { useOnlyFetchOnceSWR } from '@/libs/swr';
 // Import for type usage
 import { electronSystemService } from '@/services/electron/system';
-import { globalAgentContextManager } from '@/utils/client/GlobalAgentContextManager';
 import { merge } from '@/utils/merge';
 
 import type { ElectronStore } from '../store';

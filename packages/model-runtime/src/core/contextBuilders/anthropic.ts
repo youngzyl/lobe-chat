@@ -62,7 +62,7 @@ const buildArrayContent = async (content: UserMessageContentPart[]) => {
 
 export const buildAnthropicMessage = async (
   message: OpenAIChatMessage,
-): Promise<Anthropic.Messages.MessageParam> => {
+): Promise<Anthropic.Messages.MessageParam | undefined> => {
   const content = message.content as string | UserMessageContentPart[];
 
   switch (message.role) {
@@ -118,7 +118,10 @@ export const buildAnthropicMessage = async (
       }
 
       // or it's a plain assistant message
-      return { content: content as string, role: 'assistant' };
+      // Anthropic API requires non-empty content, filter out empty/whitespace-only content
+      const textContent = (content as string)?.trim();
+      if (!textContent) return undefined;
+      return { content: textContent, role: 'assistant' };
     }
 
     case 'function': {
@@ -176,7 +179,10 @@ export const buildAnthropicMessages = async (
       }
     } else {
       const anthropicMessage = await buildAnthropicMessage(message);
-      messages.push({ ...anthropicMessage, role: anthropicMessage.role });
+      // Filter out undefined messages (e.g., empty assistant messages)
+      if (anthropicMessage) {
+        messages.push(anthropicMessage);
+      }
     }
   }
 
@@ -222,4 +228,18 @@ export const buildAnthropicTools = (
       name: tool.function.name,
     }),
   );
+};
+
+export const buildSearchTool = (): Anthropic.WebSearchTool20250305 => {
+  const maxUses = process.env.ANTHROPIC_MAX_USES;
+
+  return {
+    name: 'web_search',
+    type: 'web_search_20250305',
+    ...(maxUses &&
+      Number.isInteger(Number(maxUses)) &&
+      Number(maxUses) > 0 && {
+        max_uses: Number(maxUses),
+      }),
+  };
 };

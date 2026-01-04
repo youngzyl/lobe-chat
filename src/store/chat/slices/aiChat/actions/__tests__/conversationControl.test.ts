@@ -1,9 +1,10 @@
+import { ConversationContext } from '@lobechat/types';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatStore } from '../../../../store';
 import { messageMapKey } from '../../../../utils/messageMapKey';
-import { TEST_IDS } from './fixtures';
+import { TEST_IDS, createMockMessage } from './fixtures';
 import { resetTestEnvironment } from './helpers';
 
 // Keep zustand mock as it's needed globally
@@ -19,103 +20,156 @@ afterEach(() => {
 
 describe('ConversationControl actions', () => {
   describe('stopGenerateMessage', () => {
-    it('should abort generation and clear loading state when controller exists', () => {
-      const abortController = new AbortController();
+    it('should cancel running generateAI operations in current context', () => {
+      const { result } = renderHook(() => useChatStore());
 
       act(() => {
-        useChatStore.setState({ chatLoadingIdsAbortController: abortController });
+        useChatStore.setState({
+          activeAgentId: TEST_IDS.SESSION_ID,
+          activeTopicId: TEST_IDS.TOPIC_ID,
+        });
       });
 
-      const { result } = renderHook(() => useChatStore());
-      const toggleLoadingSpy = vi.spyOn(result.current, 'internal_toggleChatLoading');
+      // Create a generateAI operation
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: TEST_IDS.TOPIC_ID,
+          },
+        });
+        operationId = res.operationId;
+      });
 
+      expect(result.current.operations[operationId!].status).toBe('running');
+
+      // Stop generation
       act(() => {
         result.current.stopGenerateMessage();
       });
 
-      expect(abortController.signal.aborted).toBe(true);
-      expect(toggleLoadingSpy).toHaveBeenCalledWith(false, undefined, expect.any(String));
+      expect(result.current.operations[operationId!].status).toBe('cancelled');
     });
 
-    it('should do nothing when abort controller is not set', () => {
+    it('should not cancel operations from different context', () => {
+      const { result } = renderHook(() => useChatStore());
+
       act(() => {
-        useChatStore.setState({ chatLoadingIdsAbortController: undefined });
+        useChatStore.setState({
+          activeAgentId: TEST_IDS.SESSION_ID,
+          activeTopicId: TEST_IDS.TOPIC_ID,
+        });
       });
 
-      const { result } = renderHook(() => useChatStore());
-      const toggleLoadingSpy = vi.spyOn(result.current, 'internal_toggleChatLoading');
+      // Create a generateAI operation in a different context
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: {
+            agentId: 'different-session',
+            topicId: 'different-topic',
+          },
+        });
+        operationId = res.operationId;
+      });
 
+      expect(result.current.operations[operationId!].status).toBe('running');
+
+      // Stop generation - should not affect different context
       act(() => {
         result.current.stopGenerateMessage();
       });
 
-      expect(toggleLoadingSpy).not.toHaveBeenCalled();
+      expect(result.current.operations[operationId!].status).toBe('running');
     });
   });
 
   describe('cancelSendMessageInServer', () => {
-    it('should abort operation and restore editor state when cancelling', () => {
+    it('should cancel operation and restore editor state', () => {
       const { result } = renderHook(() => useChatStore());
-      const mockAbort = vi.fn();
       const mockSetJSONState = vi.fn();
+      const editorState = { content: 'saved content' };
 
       act(() => {
         useChatStore.setState({
-          activeId: TEST_IDS.SESSION_ID,
+          activeAgentId: TEST_IDS.SESSION_ID,
           activeTopicId: TEST_IDS.TOPIC_ID,
-          mainSendMessageOperations: {
-            [messageMapKey(TEST_IDS.SESSION_ID, TEST_IDS.TOPIC_ID)]: {
-              isLoading: true,
-              abortController: { abort: mockAbort, signal: {} as any },
-              inputEditorTempState: { content: 'saved content' },
-            },
-          },
           mainInputEditor: { setJSONState: mockSetJSONState } as any,
         });
       });
 
+      // Create operation
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'sendMessage',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: TEST_IDS.TOPIC_ID,
+          },
+        });
+        operationId = res.operationId;
+
+        result.current.updateOperationMetadata(res.operationId, {
+          inputEditorTempState: editorState,
+        });
+      });
+
+      expect(result.current.operations[operationId!].status).toBe('running');
+
+      // Cancel
       act(() => {
         result.current.cancelSendMessageInServer();
       });
 
-      expect(mockAbort).toHaveBeenCalledWith('User cancelled sendMessage operation');
-      expect(
-        result.current.mainSendMessageOperations[
-          messageMapKey(TEST_IDS.SESSION_ID, TEST_IDS.TOPIC_ID)
-        ]?.isLoading,
-      ).toBe(false);
-      expect(mockSetJSONState).toHaveBeenCalledWith({ content: 'saved content' });
+      expect(result.current.operations[operationId!].status).toBe('cancelled');
+      expect(mockSetJSONState).toHaveBeenCalledWith(editorState);
     });
 
     it('should cancel operation for specified topic ID', () => {
       const { result } = renderHook(() => useChatStore());
-      const mockAbort = vi.fn();
       const customTopicId = 'custom-topic-id';
 
       act(() => {
         useChatStore.setState({
-          activeId: TEST_IDS.SESSION_ID,
-          mainSendMessageOperations: {
-            [messageMapKey(TEST_IDS.SESSION_ID, customTopicId)]: {
-              isLoading: true,
-              abortController: { abort: mockAbort, signal: {} as any },
-            },
-          },
+          activeAgentId: TEST_IDS.SESSION_ID,
         });
       });
 
+      // Create operation
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'sendMessage',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: customTopicId,
+          },
+        });
+        operationId = res.operationId;
+      });
+
+      expect(result.current.operations[operationId!].status).toBe('running');
+
+      // Cancel
       act(() => {
         result.current.cancelSendMessageInServer(customTopicId);
       });
 
-      expect(mockAbort).toHaveBeenCalledWith('User cancelled sendMessage operation');
+      expect(result.current.operations[operationId!].status).toBe('cancelled');
     });
 
     it('should handle gracefully when operation does not exist', () => {
       const { result } = renderHook(() => useChatStore());
 
       act(() => {
-        useChatStore.setState({ mainSendMessageOperations: {} });
+        useChatStore.setState({
+          operations: {},
+          operationsByContext: {},
+        });
       });
 
       expect(() => {
@@ -132,33 +186,46 @@ describe('ConversationControl actions', () => {
 
       act(() => {
         useChatStore.setState({
-          activeId: TEST_IDS.SESSION_ID,
+          activeAgentId: TEST_IDS.SESSION_ID,
           activeTopicId: TEST_IDS.TOPIC_ID,
-          mainSendMessageOperations: {
-            [messageMapKey(TEST_IDS.SESSION_ID, TEST_IDS.TOPIC_ID)]: {
-              isLoading: false,
-              inputSendErrorMsg: 'Some error',
-            },
-          },
         });
       });
 
+      // Create operation with error
+      let operationId: string;
+      act(() => {
+        const res = result.current.startOperation({
+          type: 'sendMessage',
+          context: {
+            agentId: TEST_IDS.SESSION_ID,
+            topicId: TEST_IDS.TOPIC_ID,
+          },
+        });
+        operationId = res.operationId;
+
+        result.current.updateOperationMetadata(res.operationId, {
+          inputSendErrorMsg: 'Some error',
+        });
+      });
+
+      expect(result.current.operations[operationId!].metadata.inputSendErrorMsg).toBe('Some error');
+
+      // Clear error
       act(() => {
         result.current.clearSendMessageError();
       });
 
-      expect(
-        result.current.mainSendMessageOperations[
-          messageMapKey(TEST_IDS.SESSION_ID, TEST_IDS.TOPIC_ID)
-        ],
-      ).toBeUndefined();
+      expect(result.current.operations[operationId!].metadata.inputSendErrorMsg).toBeUndefined();
     });
 
     it('should handle gracefully when no error operation exists', () => {
       const { result } = renderHook(() => useChatStore());
 
       act(() => {
-        useChatStore.setState({ mainSendMessageOperations: {} });
+        useChatStore.setState({
+          operations: {},
+          operationsByContext: {},
+        });
       });
 
       expect(() => {
@@ -169,112 +236,80 @@ describe('ConversationControl actions', () => {
     });
   });
 
-  describe('internal_toggleSendMessageOperation', () => {
-    it('should create new send operation with abort controller', () => {
+  describe('Operation system integration', () => {
+    it('should create operation with abort controller', () => {
       const { result } = renderHook(() => useChatStore());
+
+      let operationId: string = '';
       let abortController: AbortController | undefined;
 
       act(() => {
-        abortController = result.current.internal_toggleSendMessageOperation('test-key', true);
+        const res = result.current.startOperation({
+          type: 'sendMessage',
+          context: { agentId: 'test-session' },
+        });
+        operationId = res.operationId;
+        abortController = res.abortController;
       });
 
       expect(abortController!).toBeInstanceOf(AbortController);
-      expect(result.current.mainSendMessageOperations['test-key']?.isLoading).toBe(true);
-      expect(result.current.mainSendMessageOperations['test-key']?.abortController).toBe(
-        abortController,
-      );
+      expect(result.current.operations[operationId!].abortController).toBe(abortController);
+      expect(result.current.operations[operationId!].status).toBe('running');
     });
 
-    it('should stop send operation and clear abort controller', () => {
+    it('should update operation metadata', () => {
       const { result } = renderHook(() => useChatStore());
-      const mockAbortController = { abort: vi.fn() } as any;
 
-      let abortController: AbortController | undefined;
-      act(() => {
-        result.current.internal_updateSendMessageOperation('test-key', {
-          isLoading: true,
-          abortController: mockAbortController,
-        });
-
-        abortController = result.current.internal_toggleSendMessageOperation('test-key', false);
-      });
-
-      expect(abortController).toBeUndefined();
-      expect(result.current.mainSendMessageOperations['test-key']?.isLoading).toBe(false);
-      expect(result.current.mainSendMessageOperations['test-key']?.abortController).toBeNull();
-    });
-
-    it('should call abort with cancel reason when stopping', () => {
-      const { result } = renderHook(() => useChatStore());
-      const mockAbortController = { abort: vi.fn() } as any;
+      let operationId: string;
 
       act(() => {
-        result.current.internal_updateSendMessageOperation('test-key', {
-          isLoading: true,
-          abortController: mockAbortController,
+        const res = result.current.startOperation({
+          type: 'sendMessage',
+          context: { agentId: 'test-session' },
         });
+        operationId = res.operationId;
 
-        result.current.internal_toggleSendMessageOperation('test-key', false, 'Test cancel reason');
+        result.current.updateOperationMetadata(res.operationId, {
+          inputSendErrorMsg: 'test error',
+          inputEditorTempState: { content: 'test' },
+        });
       });
 
-      expect(mockAbortController.abort).toHaveBeenCalledWith('Test cancel reason');
+      expect(result.current.operations[operationId!].metadata.inputSendErrorMsg).toBe('test error');
+      expect(result.current.operations[operationId!].metadata.inputEditorTempState).toEqual({
+        content: 'test',
+      });
     });
 
     it('should support multiple parallel operations', () => {
       const { result } = renderHook(() => useChatStore());
 
-      let abortController1, abortController2;
-      act(() => {
-        abortController1 = result.current.internal_toggleSendMessageOperation('key1', true);
-        abortController2 = result.current.internal_toggleSendMessageOperation('key2', true);
-      });
-
-      expect(result.current.mainSendMessageOperations['key1']?.isLoading).toBe(true);
-      expect(result.current.mainSendMessageOperations['key2']?.isLoading).toBe(true);
-      expect(abortController1).not.toBe(abortController2);
-    });
-  });
-
-  describe('internal_updateSendMessageOperation', () => {
-    it('should update operation state', () => {
-      const { result } = renderHook(() => useChatStore());
-      const mockAbortController = new AbortController();
+      let opId1: string = '';
+      let opId2: string = '';
 
       act(() => {
-        result.current.internal_updateSendMessageOperation('test-key', {
-          isLoading: true,
-          abortController: mockAbortController,
-          inputSendErrorMsg: 'test error',
+        const res1 = result.current.startOperation({
+          type: 'sendMessage',
+          context: { agentId: 'session-1', topicId: 'topic-1' },
         });
-      });
-
-      expect(result.current.mainSendMessageOperations['test-key']).toEqual({
-        isLoading: true,
-        abortController: mockAbortController,
-        inputSendErrorMsg: 'test error',
-      });
-    });
-
-    it('should support partial update of operation state', () => {
-      const { result } = renderHook(() => useChatStore());
-      const initialController = new AbortController();
-
-      act(() => {
-        result.current.internal_updateSendMessageOperation('test-key', {
-          isLoading: true,
-          abortController: initialController,
+        const res2 = result.current.startOperation({
+          type: 'sendMessage',
+          context: { agentId: 'session-1', topicId: 'topic-2' },
         });
 
-        result.current.internal_updateSendMessageOperation('test-key', {
-          inputSendErrorMsg: 'new error',
-        });
+        opId1 = res1.operationId;
+        opId2 = res2.operationId;
       });
 
-      expect(result.current.mainSendMessageOperations['test-key']).toEqual({
-        isLoading: true,
-        abortController: initialController,
-        inputSendErrorMsg: 'new error',
-      });
+      expect(result.current.operations[opId1!].status).toBe('running');
+      expect(result.current.operations[opId2!].status).toBe('running');
+      expect(opId1).not.toBe(opId2);
+
+      const contextKey1 = messageMapKey({ agentId: 'session-1', topicId: 'topic-1' });
+      const contextKey2 = messageMapKey({ agentId: 'session-1', topicId: 'topic-2' });
+
+      expect(result.current.operationsByContext[contextKey1]).toContain(opId1!);
+      expect(result.current.operationsByContext[contextKey2]).toContain(opId2!);
     });
   });
 
@@ -292,7 +327,11 @@ describe('ConversationControl actions', () => {
         await result.current.switchMessageBranch(messageId, branchIndex);
       });
 
-      expect(optimisticUpdateSpy).toHaveBeenCalledWith(messageId, { activeBranchIndex: branchIndex });
+      expect(optimisticUpdateSpy).toHaveBeenCalledWith(
+        messageId,
+        { activeBranchIndex: branchIndex },
+        undefined,
+      );
     });
 
     it('should handle switching to branch 0', async () => {
@@ -308,7 +347,11 @@ describe('ConversationControl actions', () => {
         await result.current.switchMessageBranch(messageId, branchIndex);
       });
 
-      expect(optimisticUpdateSpy).toHaveBeenCalledWith(messageId, { activeBranchIndex: 0 });
+      expect(optimisticUpdateSpy).toHaveBeenCalledWith(
+        messageId,
+        { activeBranchIndex: 0 },
+        undefined,
+      );
     });
 
     it('should handle errors gracefully when optimistic update fails', async () => {
@@ -326,7 +369,333 @@ describe('ConversationControl actions', () => {
         }),
       ).rejects.toThrow('Update failed');
 
-      expect(optimisticUpdateSpy).toHaveBeenCalledWith(messageId, { activeBranchIndex: branchIndex });
+      expect(optimisticUpdateSpy).toHaveBeenCalledWith(
+        messageId,
+        { activeBranchIndex: branchIndex },
+        undefined,
+      );
+    });
+  });
+
+  describe('approveToolCalling', () => {
+    it('should use provided context instead of global state', async () => {
+      const { result } = renderHook(() => useChatStore());
+
+      // Setup: global activeAgentId = 'global-agent'
+      const globalAgentId = 'global-agent';
+      const builderAgentId = 'builder-agent';
+      const builderTopicId = 'builder-topic';
+
+      // Create tool message
+      const toolMessage = createMockMessage({
+        id: 'tool-msg-1',
+        role: 'tool',
+        plugin: { identifier: 'test-plugin', type: 'default', arguments: '{}', apiName: 'test' },
+      });
+
+      // Setup store with global context and builder context messages
+      const globalKey = messageMapKey({ agentId: globalAgentId, topicId: null });
+      const builderKey = messageMapKey({
+        agentId: builderAgentId,
+        topicId: builderTopicId,
+        scope: 'agent_builder',
+      });
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: globalAgentId,
+          activeTopicId: undefined,
+          dbMessagesMap: {
+            [globalKey]: [createMockMessage({ id: 'global-msg', role: 'user' })],
+            [builderKey]: [toolMessage],
+          },
+          messagesMap: {
+            [globalKey]: [createMockMessage({ id: 'global-msg', role: 'user' })],
+            [builderKey]: [toolMessage],
+          },
+        });
+      });
+
+      // Mock internal methods
+      const optimisticUpdatePluginSpy = vi
+        .spyOn(result.current, 'optimisticUpdatePlugin')
+        .mockResolvedValue(undefined);
+      const internal_createAgentStateSpy = vi
+        .spyOn(result.current, 'internal_createAgentState')
+        .mockReturnValue({
+          state: {} as any,
+          context: { phase: 'init' } as any,
+        });
+      const internal_execAgentRuntimeSpy = vi
+        .spyOn(result.current, 'internal_execAgentRuntime')
+        .mockResolvedValue(undefined);
+
+      // Call with builder context
+      const context: ConversationContext = {
+        agentId: builderAgentId,
+        topicId: builderTopicId,
+        scope: 'agent_builder',
+      };
+
+      await act(async () => {
+        await result.current.approveToolCalling('tool-msg-1', 'group-1', context);
+      });
+
+      // Verify internal_createAgentState was called with builder context
+      expect(internal_createAgentStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: builderAgentId,
+          topicId: builderTopicId,
+        }),
+      );
+
+      // Verify internal_execAgentRuntime was called with builder context (now wrapped in context object)
+      expect(internal_execAgentRuntimeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: builderAgentId,
+            topicId: builderTopicId,
+            scope: 'agent_builder',
+          }),
+        }),
+      );
+    });
+
+    it('should fallback to global state when context not provided', async () => {
+      const { result } = renderHook(() => useChatStore());
+
+      const globalAgentId = 'global-agent';
+      const globalTopicId = 'global-topic';
+
+      // Create tool message
+      const toolMessage = createMockMessage({
+        id: 'tool-msg-1',
+        role: 'tool',
+        plugin: { identifier: 'test-plugin', type: 'default', arguments: '{}', apiName: 'test' },
+      });
+
+      const globalKey = messageMapKey({ agentId: globalAgentId, topicId: globalTopicId });
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: globalAgentId,
+          activeTopicId: globalTopicId,
+          activeThreadId: undefined,
+          dbMessagesMap: {
+            [globalKey]: [toolMessage],
+          },
+          messagesMap: {
+            [globalKey]: [toolMessage],
+          },
+        });
+      });
+
+      // Mock internal methods
+      vi.spyOn(result.current, 'optimisticUpdatePlugin').mockResolvedValue(undefined);
+      const internal_createAgentStateSpy = vi
+        .spyOn(result.current, 'internal_createAgentState')
+        .mockReturnValue({
+          state: {} as any,
+          context: { phase: 'init' } as any,
+        });
+      const internal_execAgentRuntimeSpy = vi
+        .spyOn(result.current, 'internal_execAgentRuntime')
+        .mockResolvedValue(undefined);
+
+      // Call without context (should use global state)
+      await act(async () => {
+        await result.current.approveToolCalling('tool-msg-1', 'group-1');
+      });
+
+      // Verify internal_createAgentState was called with global context
+      expect(internal_createAgentStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: globalAgentId,
+          topicId: globalTopicId,
+        }),
+      );
+
+      // Verify internal_execAgentRuntime was called with global context (now wrapped in context object)
+      expect(internal_execAgentRuntimeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: globalAgentId,
+            topicId: globalTopicId,
+          }),
+        }),
+      );
+    });
+
+    it('should not execute when tool message not found', async () => {
+      const { result } = renderHook(() => useChatStore());
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: 'test-agent',
+          activeTopicId: undefined,
+          dbMessagesMap: {},
+          messagesMap: {},
+        });
+      });
+
+      const internal_execAgentRuntimeSpy = vi
+        .spyOn(result.current, 'internal_execAgentRuntime')
+        .mockResolvedValue(undefined);
+
+      await act(async () => {
+        await result.current.approveToolCalling('non-existent-msg', 'group-1');
+      });
+
+      // Should not call internal_execAgentRuntime when tool message not found
+      expect(internal_execAgentRuntimeSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('rejectAndContinueToolCalling', () => {
+    it('should use provided context instead of global state', async () => {
+      const { result } = renderHook(() => useChatStore());
+
+      const globalAgentId = 'global-agent';
+      const builderAgentId = 'builder-agent';
+      const builderTopicId = 'builder-topic';
+
+      // Create tool message
+      const toolMessage = createMockMessage({
+        id: 'tool-msg-1',
+        role: 'tool',
+        plugin: { identifier: 'test-plugin', type: 'default', arguments: '{}', apiName: 'test' },
+      });
+
+      const globalKey = messageMapKey({ agentId: globalAgentId, topicId: null });
+      const builderKey = messageMapKey({
+        agentId: builderAgentId,
+        topicId: builderTopicId,
+        scope: 'agent_builder',
+      });
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: globalAgentId,
+          activeTopicId: undefined,
+          dbMessagesMap: {
+            [globalKey]: [createMockMessage({ id: 'global-msg', role: 'user' })],
+            [builderKey]: [toolMessage],
+          },
+          messagesMap: {
+            [globalKey]: [createMockMessage({ id: 'global-msg', role: 'user' })],
+            [builderKey]: [toolMessage],
+          },
+        });
+      });
+
+      // Mock internal methods
+      vi.spyOn(result.current, 'optimisticUpdatePlugin').mockResolvedValue(undefined);
+      vi.spyOn(result.current, 'optimisticUpdateMessageContent').mockResolvedValue(undefined);
+      const internal_createAgentStateSpy = vi
+        .spyOn(result.current, 'internal_createAgentState')
+        .mockReturnValue({
+          state: {} as any,
+          context: { phase: 'init' } as any,
+        });
+      const internal_execAgentRuntimeSpy = vi
+        .spyOn(result.current, 'internal_execAgentRuntime')
+        .mockResolvedValue(undefined);
+
+      // Call with builder context
+      const context: ConversationContext = {
+        agentId: builderAgentId,
+        topicId: builderTopicId,
+        scope: 'agent_builder',
+      };
+
+      await act(async () => {
+        await result.current.rejectAndContinueToolCalling('tool-msg-1', 'User rejected', context);
+      });
+
+      // Verify internal_createAgentState was called with builder context
+      expect(internal_createAgentStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: builderAgentId,
+          topicId: builderTopicId,
+        }),
+      );
+
+      // Verify internal_execAgentRuntime was called with builder context (now wrapped in context object)
+      expect(internal_execAgentRuntimeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: builderAgentId,
+            topicId: builderTopicId,
+            scope: 'agent_builder',
+          }),
+        }),
+      );
+    });
+
+    it('should fallback to global state when context not provided', async () => {
+      const { result } = renderHook(() => useChatStore());
+
+      const globalAgentId = 'global-agent';
+      const globalTopicId = 'global-topic';
+
+      // Create tool message
+      const toolMessage = createMockMessage({
+        id: 'tool-msg-1',
+        role: 'tool',
+        plugin: { identifier: 'test-plugin', type: 'default', arguments: '{}', apiName: 'test' },
+      });
+
+      const globalKey = messageMapKey({ agentId: globalAgentId, topicId: globalTopicId });
+
+      act(() => {
+        useChatStore.setState({
+          activeAgentId: globalAgentId,
+          activeTopicId: globalTopicId,
+          activeThreadId: undefined,
+          dbMessagesMap: {
+            [globalKey]: [toolMessage],
+          },
+          messagesMap: {
+            [globalKey]: [toolMessage],
+          },
+        });
+      });
+
+      // Mock internal methods
+      vi.spyOn(result.current, 'optimisticUpdatePlugin').mockResolvedValue(undefined);
+      vi.spyOn(result.current, 'optimisticUpdateMessageContent').mockResolvedValue(undefined);
+      const internal_createAgentStateSpy = vi
+        .spyOn(result.current, 'internal_createAgentState')
+        .mockReturnValue({
+          state: {} as any,
+          context: { phase: 'init' } as any,
+        });
+      const internal_execAgentRuntimeSpy = vi
+        .spyOn(result.current, 'internal_execAgentRuntime')
+        .mockResolvedValue(undefined);
+
+      // Call without context
+      await act(async () => {
+        await result.current.rejectAndContinueToolCalling('tool-msg-1', 'User rejected');
+      });
+
+      // Verify internal_createAgentState was called with global context
+      expect(internal_createAgentStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: globalAgentId,
+          topicId: globalTopicId,
+        }),
+      );
+
+      // Verify internal_execAgentRuntime was called with global context
+      expect(internal_execAgentRuntimeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: globalAgentId,
+            topicId: globalTopicId,
+          }),
+        }),
+      );
     });
   });
 });

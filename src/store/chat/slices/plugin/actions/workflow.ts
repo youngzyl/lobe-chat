@@ -1,9 +1,9 @@
 /* eslint-disable sort-keys-fix/sort-keys-fix, typescript-sort-keys/interface */
-import { CreateMessageParams } from '@lobechat/types';
-import { StateCreator } from 'zustand/vanilla';
+import { type CreateMessageParams } from '@lobechat/types';
+import { type StateCreator } from 'zustand/vanilla';
 
 import { messageService } from '@/services/message';
-import { ChatStore } from '@/store/chat/store';
+import { type ChatStore } from '@/store/chat/store';
 
 import { dbMessageSelectors, displayMessageSelectors } from '../../message/selectors';
 import { threadSelectors } from '../../thread/selectors';
@@ -28,15 +28,6 @@ export interface PluginWorkflowAction {
     inPortalThread?: boolean;
     inSearchWorkflow?: boolean;
   }) => Promise<void>;
-
-  /**
-   * Trigger tool calls (V1 deprecated method)
-   * @deprecated
-   */
-  triggerToolCalls: (
-    id: string,
-    params?: { threadId?: string; inPortalThread?: boolean; inSearchWorkflow?: boolean },
-  ) => Promise<void>;
 }
 
 export const pluginWorkflow: StateCreator<
@@ -46,76 +37,41 @@ export const pluginWorkflow: StateCreator<
   PluginWorkflowAction
 > = (set, get) => ({
   createAssistantMessageByPlugin: async (content, parentId) => {
+    // Get parent message to extract agentId/topicId
+    const parentMessage = dbMessageSelectors.getDbMessageById(parentId)(get());
+
     const newMessage: CreateMessageParams = {
       content,
       parentId,
       role: 'assistant',
-      sessionId: get().activeId,
-      topicId: get().activeTopicId, // if there is activeTopicId，then add it to topicId
+      agentId: parentMessage?.agentId ?? get().activeAgentId,
+      topicId: parentMessage?.topicId !== undefined ? parentMessage.topicId : get().activeTopicId,
     };
 
     const result = await messageService.createMessage(newMessage);
-    get().replaceMessages(result.messages);
+    get().replaceMessages(result.messages, {
+      context: { agentId: newMessage.agentId, topicId: newMessage.topicId },
+    });
   },
 
-  triggerAIMessage: async ({ parentId, traceId, threadId, inPortalThread, inSearchWorkflow }) => {
-    const { internal_execAgentRuntime } = get();
+  triggerAIMessage: async ({ parentId, threadId, inPortalThread, inSearchWorkflow }) => {
+    const { internal_execAgentRuntime, activeAgentId, activeTopicId } = get();
 
     const chats = inPortalThread
       ? threadSelectors.portalAIChatsWithHistoryConfig(get())
       : displayMessageSelectors.mainAIChatsWithHistoryConfig(get());
 
     await internal_execAgentRuntime({
+      context: {
+        agentId: activeAgentId,
+        topicId: activeTopicId,
+        threadId,
+      },
       messages: chats,
       parentMessageId: parentId ?? chats.at(-1)!.id,
       parentMessageType: 'user',
-      traceId,
-      threadId,
       inPortalThread,
       inSearchWorkflow,
     });
-  },
-
-  triggerToolCalls: async (assistantId, { threadId, inPortalThread, inSearchWorkflow } = {}) => {
-    const message = displayMessageSelectors.getDisplayMessageById(assistantId)(get());
-    if (!message || !message.tools) return;
-
-    let shouldCreateMessage = false;
-    let latestToolId = '';
-    const messagePools = message.tools.map(async (payload) => {
-      const toolMessage: CreateMessageParams = {
-        content: '',
-        parentId: assistantId,
-        plugin: payload,
-        role: 'tool',
-        sessionId: get().activeId,
-        tool_call_id: payload.id,
-        threadId,
-        topicId: get().activeTopicId, // if there is activeTopicId，then add it to topicId
-        groupId: message.groupId, // Propagate groupId from parent message for group chat
-      };
-
-      const result = await get().optimisticCreateMessage(toolMessage);
-      if (!result) return;
-
-      // trigger the plugin call
-      const data = await get().internal_invokeDifferentTypePlugin(result.id, payload);
-
-      if (data && !['markdown', 'standalone'].includes(payload.type)) {
-        shouldCreateMessage = true;
-        latestToolId = result.id;
-      }
-    });
-
-    await Promise.all(messagePools);
-
-    await get().internal_toggleMessageInToolsCalling(false, assistantId);
-
-    // only default type tool calls should trigger AI message
-    if (!shouldCreateMessage) return;
-
-    const traceId = dbMessageSelectors.getTraceIdByDbMessageId(latestToolId)(get());
-
-    await get().triggerAIMessage({ traceId, threadId, inPortalThread, inSearchWorkflow });
   },
 });

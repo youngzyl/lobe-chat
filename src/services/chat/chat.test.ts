@@ -1,3 +1,4 @@
+import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { LobeTool } from '@lobechat/types';
 import { UIChatMessage } from '@lobechat/types';
 import { ChatErrorType } from '@lobechat/types';
@@ -9,10 +10,9 @@ import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vite
 import { DEFAULT_USER_AVATAR } from '@/const/meta';
 import { DEFAULT_AGENT_CONFIG } from '@/const/settings';
 import * as toolEngineeringModule from '@/helpers/toolEngineering';
-import { agentChatConfigSelectors } from '@/store/agent/selectors';
+import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
 import { aiModelSelectors } from '@/store/aiInfra';
 import { useToolStore } from '@/store/tool';
-import { WebBrowsingManifest } from '@/tools/web-browsing';
 
 import { chatService } from './index';
 
@@ -58,6 +58,15 @@ beforeEach(async () => {
     isDeprecatedEdition: true,
     isDesktop: false,
   }));
+
+  // Default mock for agentSelectors - resolveAgentConfig needs these
+  vi.spyOn(agentSelectors, 'getAgentConfigById').mockReturnValue(
+    () => ({ plugins: [], systemRole: '' }) as any,
+  );
+  vi.spyOn(agentSelectors, 'getAgentSlugById').mockReturnValue(() => undefined);
+  vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+    () => ({ searchMode: 'off' }) as any,
+  );
 });
 
 // mock auth
@@ -128,11 +137,14 @@ describe('ChatService', () => {
         vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['enableReasoning']);
 
         // Mock agent chat config with reasoning enabled
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-          enableReasoning: true,
-          reasoningBudgetToken: 2048,
-          searchMode: 'off',
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              enableReasoning: true,
+              reasoningBudgetToken: 2048,
+              searchMode: 'off',
+            }) as any,
+        );
 
         await chatService.createAssistantMessage({
           messages,
@@ -161,10 +173,13 @@ describe('ChatService', () => {
         vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['enableReasoning']);
 
         // Mock agent chat config with reasoning disabled
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-          enableReasoning: false,
-          searchMode: 'off',
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              enableReasoning: false,
+              searchMode: 'off',
+            }) as any,
+        );
 
         await chatService.createAssistantMessage({
           messages,
@@ -193,11 +208,14 @@ describe('ChatService', () => {
         vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['enableReasoning']);
 
         // Mock agent chat config with reasoning enabled but no custom budget
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-          enableReasoning: true,
-          // reasoningBudgetToken is undefined
-          searchMode: 'off',
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              enableReasoning: true,
+              // reasoningBudgetToken is undefined
+              searchMode: 'off',
+            }) as any,
+        );
 
         await chatService.createAssistantMessage({
           messages,
@@ -226,10 +244,13 @@ describe('ChatService', () => {
         vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['reasoningEffort']);
 
         // Mock agent chat config with reasoning effort set
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-          reasoningEffort: 'high',
-          searchMode: 'off',
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              reasoningEffort: 'high',
+              searchMode: 'off',
+            }) as any,
+        );
 
         await chatService.createAssistantMessage({
           messages,
@@ -255,10 +276,13 @@ describe('ChatService', () => {
         vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['thinkingBudget']);
 
         // Mock agent chat config with thinking budget set
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-          thinkingBudget: 5000,
-          searchMode: 'off',
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              thinkingBudget: 5000,
+              searchMode: 'off',
+            }) as any,
+        );
 
         await chatService.createAssistantMessage({
           messages,
@@ -278,14 +302,15 @@ describe('ChatService', () => {
 
     describe('should handle content correctly for vision models', () => {
       it('should include image content when with vision model', async () => {
+        // Mock helpers to return true for vision support (must be first)
+        const helpers = await import('./helper');
+        vi.spyOn(helpers, 'isCanUseVision').mockReturnValue(true);
+
         // Mock utility functions used in processImageList
         const { parseDataUri } = await import('@lobechat/utils/uriParser');
         const { isDesktopLocalStaticServerUrl } = await import('@lobechat/utils/url');
         vi.mocked(parseDataUri).mockReturnValue({ type: 'url', base64: null, mimeType: null });
         vi.mocked(isDesktopLocalStaticServerUrl).mockReturnValue(false); // Not a local URL
-
-        // Mock aiModelSelectors to return true for vision support
-        vi.spyOn(aiModelSelectors, 'isModelSupportVision').mockReturnValue(() => true);
 
         const messages = [
           {
@@ -315,12 +340,22 @@ describe('ChatService', () => {
               {
                 content: [
                   {
-                    text: 'Hello',
+                    text: `Hello
+
+<!-- SYSTEM CONTEXT (NOT PART OF USER QUERY) -->
+<context.instruction>following part contains context information injected by the system. Please follow these instructions:
+
+1. Always prioritize handling user-visible content.
+2. the context is only required when user's queries rely on it.
+</context.instruction>
+<files_info>
+<images>
+<images_docstring>here are user upload images you can refer to</images_docstring>
+<image name="abc.png" url="http://example.com/image.jpg"></image>
+</images>
+</files_info>
+<!-- END SYSTEM CONTEXT -->`,
                     type: 'text',
-                  },
-                  {
-                    image_url: { detail: 'auto', url: 'http://example.com/image.jpg' },
-                    type: 'image_url',
                   },
                 ],
                 role: 'user',
@@ -328,6 +363,7 @@ describe('ChatService', () => {
             ],
             model: 'gpt-4-vision-preview',
             provider: 'openai',
+            stream: true,
             enabledSearch: undefined,
             tools: undefined,
           },
@@ -351,6 +387,7 @@ describe('ChatService', () => {
               { content: 'Hello', role: 'user' },
               { content: 'Hey', role: 'assistant' },
             ],
+            stream: true,
             tools: undefined,
           },
           undefined,
@@ -388,7 +425,6 @@ describe('ChatService', () => {
             ],
             createdAt: Date.now(),
             id: 'test-id',
-            meta: {},
             updatedAt: Date.now(),
           },
         ] as UIChatMessage[];
@@ -417,7 +453,21 @@ describe('ChatService', () => {
               {
                 content: [
                   {
-                    text: 'Hello',
+                    text: `Hello
+
+<!-- SYSTEM CONTEXT (NOT PART OF USER QUERY) -->
+<context.instruction>following part contains context information injected by the system. Please follow these instructions:
+
+1. Always prioritize handling user-visible content.
+2. the context is only required when user's queries rely on it.
+</context.instruction>
+<files_info>
+<images>
+<images_docstring>here are user upload images you can refer to</images_docstring>
+<image name="local-image.png" url="http://127.0.0.1:3000/uploads/image.png"></image>
+</images>
+</files_info>
+<!-- END SYSTEM CONTEXT -->`,
                     type: 'text',
                   },
                   {
@@ -432,6 +482,9 @@ describe('ChatService', () => {
               },
             ],
             model: 'gpt-4-vision-preview',
+            stream: true,
+            enabledSearch: undefined,
+            tools: undefined,
           },
           undefined,
         );
@@ -463,7 +516,6 @@ describe('ChatService', () => {
             ],
             createdAt: Date.now(),
             id: 'test-id-2',
-            meta: {},
             updatedAt: Date.now(),
           },
         ] as UIChatMessage[];
@@ -491,7 +543,21 @@ describe('ChatService', () => {
               {
                 content: [
                   {
-                    text: 'Hello',
+                    text: `Hello
+
+<!-- SYSTEM CONTEXT (NOT PART OF USER QUERY) -->
+<context.instruction>following part contains context information injected by the system. Please follow these instructions:
+
+1. Always prioritize handling user-visible content.
+2. the context is only required when user's queries rely on it.
+</context.instruction>
+<files_info>
+<images>
+<images_docstring>here are user upload images you can refer to</images_docstring>
+<image name="remote-image.jpg" url="https://example.com/remote-image.jpg"></image>
+</images>
+</files_info>
+<!-- END SYSTEM CONTEXT -->`,
                     type: 'text',
                   },
                   {
@@ -503,6 +569,9 @@ describe('ChatService', () => {
               },
             ],
             model: 'gpt-4-vision-preview',
+            stream: true,
+            enabledSearch: undefined,
+            tools: undefined,
           },
           undefined,
         );
@@ -553,7 +622,6 @@ describe('ChatService', () => {
             ],
             createdAt: Date.now(),
             id: 'test-id-3',
-            meta: {},
             updatedAt: Date.now(),
           },
         ] as UIChatMessage[];
@@ -607,9 +675,6 @@ describe('ChatService', () => {
             id: 'vyQvEw6V',
             updatedAt: 1702723964330,
             extra: {},
-            meta: {
-              avatar: DEFAULT_USER_AVATAR,
-            },
           },
         ] as UIChatMessage[];
 
@@ -670,7 +735,9 @@ describe('ChatService', () => {
 
         expect(getChatCompletionSpy).toHaveBeenCalledWith(
           {
+            enabledSearch: undefined,
             model: 'gpt-3.5-turbo-1106',
+            stream: true,
             top_p: 1,
             tools: [
               {
@@ -770,7 +837,9 @@ describe('ChatService', () => {
 
         expect(getChatCompletionSpy).toHaveBeenCalledWith(
           {
+            enabledSearch: undefined,
             model: 'gpt-3.5-turbo-1106',
+            stream: true,
             top_p: 1,
             tools: [
               {
@@ -824,7 +893,10 @@ describe('ChatService', () => {
 
         expect(getChatCompletionSpy).toHaveBeenCalledWith(
           {
+            enabledSearch: undefined,
             model: 'gpt-3.5-turbo-1106',
+            stream: true,
+            tools: undefined,
             top_p: 1,
             messages: [
               {
@@ -846,10 +918,13 @@ describe('ChatService', () => {
         const messages = [{ content: 'Search for something', role: 'user' }] as UIChatMessage[];
 
         // Mock agent store state with search enabled
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValueOnce({
-          searchMode: 'auto', // not 'off'
-          useModelBuiltinSearch: false,
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              searchMode: 'auto', // not 'off'
+              useModelBuiltinSearch: false,
+            }) as any,
+        );
 
         // Mock AI infra store state
         vi.spyOn(aiModelSelectors, 'isModelHasBuiltinSearch').mockReturnValueOnce(() => false);
@@ -870,7 +945,7 @@ describe('ChatService', () => {
             enabledToolIds: [WebBrowsingManifest.identifier],
           }),
         };
-        vi.spyOn(toolEngineeringModule, 'createChatToolsEngine').mockReturnValue(
+        vi.spyOn(toolEngineeringModule, 'createAgentToolsEngine').mockReturnValue(
           mockToolsEngine as any,
         );
 
@@ -897,10 +972,13 @@ describe('ChatService', () => {
         const messages = [{ content: 'Search for something', role: 'user' }] as UIChatMessage[];
 
         // Mock agent store state with search enabled and useModelBuiltinSearch enabled
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValueOnce({
-          searchMode: 'auto', // not 'off'
-          useModelBuiltinSearch: true,
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              searchMode: 'auto', // not 'off'
+              useModelBuiltinSearch: true,
+            }) as any,
+        );
 
         // Mock AI infra store state - model has built-in search
         vi.spyOn(aiModelSelectors, 'isModelHasBuiltinSearch').mockReturnValueOnce(() => true);
@@ -921,7 +999,7 @@ describe('ChatService', () => {
             enabledToolIds: [WebBrowsingManifest.identifier],
           }),
         };
-        vi.spyOn(toolEngineeringModule, 'createChatToolsEngine').mockReturnValue(
+        vi.spyOn(toolEngineeringModule, 'createAgentToolsEngine').mockReturnValue(
           mockToolsEngine as any,
         );
 
@@ -942,10 +1020,13 @@ describe('ChatService', () => {
         const messages = [{ content: 'Search for something', role: 'user' }] as UIChatMessage[];
 
         // Mock agent store state with search disabled
-        vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValueOnce({
-          searchMode: 'off',
-          useModelBuiltinSearch: true,
-        } as any);
+        vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+          () =>
+            ({
+              searchMode: 'off',
+              useModelBuiltinSearch: true,
+            }) as any,
+        );
 
         // Mock AI infra store state
         vi.spyOn(aiModelSelectors, 'isModelHasBuiltinSearch').mockReturnValueOnce(() => true);
@@ -966,7 +1047,7 @@ describe('ChatService', () => {
             enabledToolIds: [WebBrowsingManifest.identifier],
           }),
         };
-        vi.spyOn(toolEngineeringModule, 'createChatToolsEngine').mockReturnValue(
+        vi.spyOn(toolEngineeringModule, 'createAgentToolsEngine').mockReturnValue(
           mockToolsEngine as any,
         );
 
@@ -1019,7 +1100,7 @@ describe('ChatService', () => {
       );
     });
 
-    it('should make a POST request without response in non-openai provider payload', async () => {
+    it('should make a POST request with chatCompletion apiMode in non-openai provider payload', async () => {
       const params: Partial<ChatStreamPayload> = {
         model: 'deepseek-reasoner',
         provider: 'deepseek',
@@ -1033,6 +1114,7 @@ describe('ChatService', () => {
         stream: true,
         ...DEFAULT_AGENT_CONFIG.params,
         messages: [],
+        apiMode: 'chatCompletion',
         provider: undefined,
       };
 
@@ -1261,10 +1343,13 @@ describe('ChatService private methods', () => {
       ]);
 
       // Mock agent chat config with context caching disabled
-      vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-        disableContextCaching: true,
-        searchMode: 'off',
-      } as any);
+      vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+        () =>
+          ({
+            disableContextCaching: true,
+            searchMode: 'off',
+          }) as any,
+      );
 
       await chatService.createAssistantMessage({
         messages,
@@ -1294,10 +1379,13 @@ describe('ChatService private methods', () => {
       ]);
 
       // Mock agent chat config with context caching enabled (default)
-      vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-        disableContextCaching: false,
-        searchMode: 'off',
-      } as any);
+      vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+        () =>
+          ({
+            disableContextCaching: false,
+            searchMode: 'off',
+          }) as any,
+      );
 
       await chatService.createAssistantMessage({
         messages,
@@ -1320,10 +1408,13 @@ describe('ChatService private methods', () => {
       vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['reasoningEffort']);
 
       // Mock agent chat config with reasoning effort set
-      vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-        reasoningEffort: 'high',
-        searchMode: 'off',
-      } as any);
+      vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+        () =>
+          ({
+            reasoningEffort: 'high',
+            searchMode: 'off',
+          }) as any,
+      );
 
       await chatService.createAssistantMessage({
         messages,
@@ -1349,10 +1440,13 @@ describe('ChatService private methods', () => {
       vi.spyOn(aiModelSelectors, 'modelExtendParams').mockReturnValue(() => ['thinkingBudget']);
 
       // Mock agent chat config with thinking budget set
-      vi.spyOn(agentChatConfigSelectors, 'currentChatConfig').mockReturnValue({
-        thinkingBudget: 5000,
-        searchMode: 'off',
-      } as any);
+      vi.spyOn(chatConfigByIdSelectors, 'getChatConfigById').mockReturnValue(
+        () =>
+          ({
+            thinkingBudget: 5000,
+            searchMode: 'off',
+          }) as any,
+      );
 
       await chatService.createAssistantMessage({
         messages,

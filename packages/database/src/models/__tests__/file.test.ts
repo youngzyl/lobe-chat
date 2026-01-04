@@ -1,8 +1,7 @@
 // @vitest-environment node
+import { FilesTabs, SortType } from '@lobechat/types';
 import { eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { FilesTabs, SortType } from '@/types/files';
 
 import {
   chunks,
@@ -16,7 +15,7 @@ import {
 } from '../../schemas';
 import { LobeChatDatabase } from '../../type';
 import { FileModel } from '../file';
-import { getTestDB } from './_util';
+import { getTestDB } from '../../core/getTestDB';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 

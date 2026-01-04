@@ -1,20 +1,21 @@
 import { lambdaClient } from '@/libs/trpc/client';
 import {
-  CheckFileHashResult,
-  FileItem,
-  QueryFileListParams,
-  QueryFileListSchemaType,
-  UploadFileParams,
+  type CheckFileHashResult,
+  type FileItem,
+  type QueryFileListParams,
+  type QueryFileListSchemaType,
+  type UploadFileParams,
 } from '@/types/files';
 
 interface CreateFileParams extends Omit<UploadFileParams, 'url'> {
   knowledgeBaseId?: string;
+  parentId?: string;
   url: string;
 }
 
 export class FileService {
   createFile = async (
-    params: UploadFileParams,
+    params: UploadFileParams & { parentId?: string },
     knowledgeBaseId?: string,
   ): Promise<{ id: string; url: string }> => {
     return lambdaClient.file.createFile.mutate({ ...params, knowledgeBaseId } as CreateFileParams);
@@ -27,7 +28,16 @@ export class FileService {
       throw new Error('file not found');
     }
 
-    return { ...item, type: item.fileType };
+    return {
+      createdAt: item.createdAt,
+      id: item.id,
+      name: item.name,
+      size: item.size,
+      source: item.source,
+      type: item.fileType,
+      updatedAt: item.updatedAt,
+      url: item.url,
+    };
   };
 
   removeFile = async (id: string): Promise<void> => {
@@ -52,12 +62,28 @@ export class FileService {
     return lambdaClient.file.getFileItemById.query({ id });
   };
 
+  getFolderBreadcrumb = async (slug: string) => {
+    return lambdaClient.document.getFolderBreadcrumb.query({ slug });
+  };
+
   checkFileHash = async (hash: string): Promise<CheckFileHashResult> => {
     return lambdaClient.file.checkFileHash.mutate({ hash });
   };
 
   removeFileAsyncTask = async (id: string, type: 'embedding' | 'chunk') => {
     return lambdaClient.file.removeFileAsyncTask.mutate({ id, type });
+  };
+
+  updateFile = async (id: string, data: { parentId?: string | null }) => {
+    return lambdaClient.file.updateFile.mutate({ id, ...data });
+  };
+
+  getRecentFiles = async (limit?: number) => {
+    return lambdaClient.file.recentFiles.query({ limit });
+  };
+
+  getRecentPages = async (limit?: number) => {
+    return lambdaClient.file.recentPages.query({ limit });
   };
 }
 

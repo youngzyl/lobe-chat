@@ -1,29 +1,39 @@
-import { AgentRuntimeErrorType, ILobeAgentRuntimeErrorType } from '@lobechat/model-runtime';
-import { ChatErrorType, ChatMessageError, ErrorType } from '@lobechat/types';
-import { IPluginErrorType } from '@lobehub/chat-plugin-sdk';
-import type { AlertProps } from '@lobehub/ui';
-import { Skeleton } from 'antd';
+import { AgentRuntimeErrorType, type ILobeAgentRuntimeErrorType } from '@lobechat/model-runtime';
+import { ChatErrorType, type ChatMessageError, type ErrorType } from '@lobechat/types';
+import { type IPluginErrorType } from '@lobehub/chat-plugin-sdk';
+import { type AlertProps, Block, Highlighter, Skeleton } from '@lobehub/ui';
 import dynamic from 'next/dynamic';
-import { Suspense, memo, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import ErrorContent from '@/features/Conversation/ChatItem/components/ErrorContent';
 import { useProviderName } from '@/hooks/useProviderName';
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
-import ClerkLogin from './ClerkLogin';
-import ErrorJsonViewer from './ErrorJsonViewer';
-import { ErrorActionContainer } from './style';
 
 interface ErrorMessageData {
   error?: ChatMessageError | null;
   id: string;
 }
 
-const loading = () => <Skeleton active />;
+const loading = () => (
+  <Block
+    align={'center'}
+    padding={16}
+    style={{
+      overflow: 'hidden',
+      position: 'relative',
+      width: '100%',
+    }}
+    variant={'outlined'}
+  >
+    <Skeleton.Button active block />
+  </Block>
+);
 
 const OllamaBizError = dynamic(() => import('./OllamaBizError'), { loading, ssr: false });
 
-const OllamaSetupGuide = dynamic(() => import('@/features/OllamaSetupGuide'), {
+const OllamaSetupGuide = dynamic(() => import('./OllamaSetupGuide'), {
   loading,
   ssr: false,
 });
@@ -35,9 +45,7 @@ const getErrorAlertConfig = (
   // OpenAIBizError / ZhipuBizError / GoogleBizError / ...
   if (typeof errorType === 'string' && (errorType.includes('Biz') || errorType.includes('Invalid')))
     return {
-      extraDefaultExpand: true,
-      extraIsolate: true,
-      type: 'warning',
+      type: 'secondary',
     };
 
   /* ↓ cloud slot ↓ */
@@ -53,7 +61,7 @@ const getErrorAlertConfig = (
     case AgentRuntimeErrorType.ExceededContextWindow:
     case AgentRuntimeErrorType.LocationNotSupportError: {
       return {
-        type: 'warning',
+        type: 'secondary',
       };
     }
 
@@ -62,9 +70,7 @@ const getErrorAlertConfig = (
     case AgentRuntimeErrorType.ComfyUIServiceUnavailable:
     case AgentRuntimeErrorType.InvalidComfyUIArgs: {
       return {
-        extraDefaultExpand: true,
-        extraIsolate: true,
-        type: 'warning',
+        type: 'secondary',
       };
     }
 
@@ -92,11 +98,11 @@ export const useErrorContent = (error: any) => {
 };
 
 interface ErrorExtraProps {
-  block?: boolean;
   data: ErrorMessageData;
+  error?: AlertProps;
 }
 
-const ErrorMessageExtra = memo<ErrorExtraProps>(({ data, block }) => {
+const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data }) => {
   const error = data.error as ChatMessageError;
   if (!error?.type) return;
 
@@ -113,10 +119,6 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(({ data, block }) => {
 
     /* ↑ cloud slot ↑ */
 
-    case ChatErrorType.InvalidClerkUser: {
-      return <ClerkLogin id={data.id} />;
-    }
-
     case AgentRuntimeErrorType.NoOpenAIAPIKey: {
       {
         return <ChatInvalidAPIKey id={data.id} provider={data.error?.body?.provider} />;
@@ -128,17 +130,24 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(({ data, block }) => {
     return <ChatInvalidAPIKey id={data.id} provider={data.error?.body?.provider} />;
   }
 
-  return <ErrorJsonViewer block={block} error={data.error} id={data.id} />;
+  return (
+    <ErrorContent
+      error={{
+        ...alertError,
+        extra: data.error?.body ? (
+          <Highlighter
+            actionIconSize={'small'}
+            language={'json'}
+            padding={8}
+            variant={'borderless'}
+          >
+            {JSON.stringify(data.error?.body, null, 2)}
+          </Highlighter>
+        ) : undefined,
+      }}
+      id={data.id}
+    />
+  );
 });
 
-export default memo<ErrorExtraProps>(({ data, block }) => (
-  <Suspense
-    fallback={
-      <ErrorActionContainer>
-        <Skeleton active style={{ width: '100%' }} />
-      </ErrorActionContainer>
-    }
-  >
-    <ErrorMessageExtra block={block} data={data} />
-  </Suspense>
-));
+export default ErrorMessageExtra;

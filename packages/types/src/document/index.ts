@@ -51,17 +51,22 @@ export interface LobeDocument {
   pages?: LobeDocumentPage[];
 
   /**
+   * Parent Folder ID
+   */
+  parentId?: string | null;
+
+  /**
    * Full path of the original file
    */
   source: string;
 
   /**
-   * 文档来源类型
+   * Document source type
    */
   sourceType: DocumentSourceType;
 
   /**
-   * 文档标题 (如果可用)。
+   * Document title (if available)
    */
   title?: string;
 
@@ -168,12 +173,12 @@ export enum DocumentSourceType {
   API = 'api',
 
   /**
-   * 编辑器创建的文档
+   * Document created in editor
    */
   EDITOR = 'editor',
 
   /**
-   * 本地或上传的文件
+   * Local or uploaded file
    */
   FILE = 'file',
 
@@ -181,4 +186,59 @@ export enum DocumentSourceType {
    * Web content
    */
   WEB = 'web',
+}
+
+/**
+ * Notebook document type for topic-associated documents
+ */
+export type NotebookDocumentType = 'article' | 'markdown' | 'note' | 'report';
+
+/**
+ * Notebook document - a document associated with a topic
+ */
+export interface NotebookDocument {
+  /**
+   * When the document was associated with the topic
+   */
+  associatedAt: Date;
+  /**
+   * Document content
+   */
+  content: string | null;
+  /**
+   * Document creation timestamp
+   */
+  createdAt: Date;
+  /**
+   * Brief summary of the document (1-2 sentences)
+   */
+  description: string | null;
+  /**
+   * Document type
+   */
+  fileType: string;
+  /**
+   * Document ID
+   */
+  id: string;
+  /**
+   * Document metadata (e.g., todos for agent/plan documents)
+   */
+  metadata: Record<string, any> | null;
+  /**
+   * Document title
+   */
+  title: string | null;
+  /**
+   * Total character count
+   */
+  totalCharCount: number;
+  /**
+   * Total line count
+   */
+  totalLineCount: number;
+  /**
+   * Document last modified timestamp
+   */
+  updatedAt: Date;
 }

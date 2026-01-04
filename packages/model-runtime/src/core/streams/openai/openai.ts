@@ -20,6 +20,23 @@ import {
   generateToolCallId,
 } from '../protocol';
 
+/**
+ * Extended type for OpenAI tool calls that includes provider-specific extensions
+ * like OpenRouter's thoughtSignature for Gemini models
+ */
+type OpenAIExtendedToolCall = OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall & {
+  thoughtSignature?: string;
+};
+
+/**
+ * Type guard to check if a tool call has thoughtSignature
+ */
+const hasThoughtSignature = (
+  toolCall: OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall,
+): toolCall is OpenAIExtendedToolCall => {
+  return 'thoughtSignature' in toolCall && typeof toolCall.thoughtSignature === 'string';
+};
+
 // Process markdown base64 images: extract URLs and clean text in one pass
 const processMarkdownBase64Images = (text: string): { cleanedText: string; urls: string[] } => {
   if (!text) return { cleanedText: text, urls: [] };
@@ -71,6 +88,55 @@ const transformOpenAIStream = (
     return { data: errorData, id: 'first_chunk_error', type: 'error' };
   }
 
+  // MiniMax 会在 base_resp 中返回业务错误（如余额不足），但不走 FIRST_CHUNK_ERROR_KEY
+  // 典型返回：{ id: '...', choices: null, base_resp: { status_code: 1008, status_msg: 'insufficient balance' }, usage: {...} }
+  if ((chunk as any).base_resp && typeof (chunk as any).base_resp.status_code === 'number') {
+    const baseResp = (chunk as any).base_resp as {
+      message?: string;
+      status_code: number;
+      status_msg?: string;
+    };
+
+    if (baseResp.status_code !== 0) {
+      // 根据 MiniMax 错误码映射到对应的错误类型
+      let errorType: ILobeAgentRuntimeErrorType = AgentRuntimeErrorType.ProviderBizError;
+
+      switch (baseResp.status_code) {
+        // 1004 - 未授权 / Token 不匹配 / 2049 - 无效的 API Key
+        case 1004:
+        case 2049: {
+          errorType = AgentRuntimeErrorType.InvalidProviderAPIKey;
+          break;
+        }
+        // 1008 - 余额不足
+        case 1008: {
+          errorType = AgentRuntimeErrorType.InsufficientQuota;
+          break;
+        }
+        // 1002 - 请求频率超限 / 1041 - 连接数限制 / 2045 - 请求频率增长超限
+        case 1002:
+        case 1041:
+        case 2045: {
+          errorType = AgentRuntimeErrorType.QuotaLimitReached;
+          break;
+        }
+        // 1039 - Token 限制
+        case 1039: {
+          errorType = AgentRuntimeErrorType.ExceededContextWindow;
+          break;
+        }
+      }
+
+      const errorData: ChatMessageError = {
+        body: { ...baseResp, provider: 'minimax' },
+        message: baseResp.status_msg || baseResp.message || 'MiniMax provider error',
+        type: errorType,
+      };
+
+      return { data: errorData, id: chunk.id, type: 'error' };
+    }
+  }
+
   try {
     // maybe need another structure to add support for multiple choices
     if (!Array.isArray(chunk.choices) || chunk.choices.length === 0) {
@@ -101,7 +167,7 @@ const transformOpenAIStream = (
               };
             }
 
-            return {
+            const baseData: StreamToolCallChunkData = {
               function: {
                 arguments: value.function?.arguments ?? '',
                 name: value.function?.name ?? null,
@@ -121,6 +187,14 @@ const transformOpenAIStream = (
               index: typeof value.index !== 'undefined' ? value.index : index,
               type: value.type || 'function',
             };
+
+            // OpenRouter returns thoughtSignature in tool_calls for Gemini models (e.g. gemini-3-flash-preview)
+            // [{"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{}"},"thoughtSignature":"abc123"}]
+            if (hasThoughtSignature(value)) {
+              baseData.thoughtSignature = value.thoughtSignature;
+            }
+
+            return baseData;
           }),
           id: chunk.id,
           type: 'tool_calls',
@@ -265,6 +339,24 @@ const transformOpenAIStream = (
       let reasoning_content = (() => {
         if ('reasoning_content' in item.delta) return item.delta.reasoning_content;
         if ('reasoning' in item.delta) return item.delta.reasoning;
+        // Handle MiniMax M2 reasoning_details format (array of objects with text field)
+        if ('reasoning_details' in item.delta) {
+          const details = item.delta.reasoning_details;
+          if (Array.isArray(details)) {
+            return details
+              .filter((detail: any) => detail.text)
+              .map((detail: any) => detail.text)
+              .join('');
+          }
+          if (typeof details === 'string') {
+            return details;
+          }
+          if (typeof details === 'object' && details !== null && 'text' in details) {
+            return details.text;
+          }
+          // Fallback for unexpected types
+          return '';
+        }
         // Handle content array format with thinking blocks (e.g. mistral AI Magistral model)
         if ('content' in item.delta && Array.isArray(item.delta.content)) {
           return item.delta.content

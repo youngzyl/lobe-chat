@@ -1,6 +1,5 @@
+import type { AssistantContentBlock } from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
-
-import type { AssistantContentBlock } from '@/types/index';
 
 import type { Message } from '../../types';
 import { MessageTransformer } from '../MessageTransformer';
@@ -14,7 +13,6 @@ describe('MessageTransformer', () => {
         content: 'Hello',
         createdAt: 0,
         id: 'msg-1',
-        meta: {},
         metadata: {
           cost: 0.001,
           duration: 1000,
@@ -54,7 +52,6 @@ describe('MessageTransformer', () => {
         content: 'Hello',
         createdAt: 0,
         id: 'msg-1',
-        meta: {},
         role: 'assistant',
         updatedAt: 0,
       };

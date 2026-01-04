@@ -2,23 +2,33 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { aiChatService } from '@/services/aiChat';
+import * as agentGroupStore from '@/store/agentGroup';
+import { getSessionStoreState } from '@/store/session';
 
 import { useChatStore } from '../../../../store';
 import { TEST_CONTENT, TEST_IDS, createMockMessage } from './fixtures';
-import {
-  resetTestEnvironment,
-  setupMockSelectors,
-  setupStoreWithMessages,
-  spyOnMessageService,
-} from './helpers';
+import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from './helpers';
 
 // Keep zustand mock as it's needed globally
 vi.mock('zustand/traditional');
+
+// Mock lambdaClient to prevent network requests
+vi.mock('@/libs/trpc/client', () => ({
+  lambdaClient: {
+    session: {
+      updateSession: {
+        mutate: vi.fn().mockResolvedValue(undefined),
+      },
+    },
+  },
+}));
 
 beforeEach(() => {
   resetTestEnvironment();
   setupMockSelectors();
   spyOnMessageService();
+  const sessionStore = getSessionStoreState();
+  vi.spyOn(sessionStore, 'triggerSessionUpdate').mockResolvedValue(undefined);
 
   act(() => {
     useChatStore.setState({
@@ -33,18 +43,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// Helper to create context for testing
+const createTestContext = (agentId: string = TEST_IDS.SESSION_ID) => ({
+  agentId,
+  topicId: null,
+  threadId: null,
+});
+
 describe('ConversationLifecycle actions', () => {
   describe('sendMessage', () => {
     describe('validation', () => {
-      it('should not send when there is no active session', async () => {
-        act(() => {
-          useChatStore.setState({ activeId: undefined });
-        });
-
+      it('should not send when sessionId is empty', async () => {
         const { result } = renderHook(() => useChatStore());
 
         await act(async () => {
-          await result.current.sendMessage({ message: TEST_CONTENT.USER_MESSAGE });
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: { agentId: '', topicId: null, threadId: null },
+          });
         });
 
         expect(result.current.internal_execAgentRuntime).not.toHaveBeenCalled();
@@ -54,7 +70,10 @@ describe('ConversationLifecycle actions', () => {
         const { result } = renderHook(() => useChatStore());
 
         await act(async () => {
-          await result.current.sendMessage({ message: TEST_CONTENT.EMPTY });
+          await result.current.sendMessage({
+            message: TEST_CONTENT.EMPTY,
+            context: createTestContext(),
+          });
         });
 
         expect(result.current.internal_execAgentRuntime).not.toHaveBeenCalled();
@@ -64,7 +83,11 @@ describe('ConversationLifecycle actions', () => {
         const { result } = renderHook(() => useChatStore());
 
         await act(async () => {
-          await result.current.sendMessage({ message: TEST_CONTENT.EMPTY, files: [] });
+          await result.current.sendMessage({
+            message: TEST_CONTENT.EMPTY,
+            files: [],
+            context: createTestContext(),
+          });
         });
 
         expect(result.current.internal_execAgentRuntime).not.toHaveBeenCalled();
@@ -85,6 +108,7 @@ describe('ConversationLifecycle actions', () => {
           await result.current.sendMessage({
             message: TEST_CONTENT.USER_MESSAGE,
             onlyAddUserMessage: true,
+            context: createTestContext(),
           });
         });
 
@@ -104,154 +128,230 @@ describe('ConversationLifecycle actions', () => {
         } as any);
 
         await act(async () => {
-          await result.current.sendMessage({ message: TEST_CONTENT.USER_MESSAGE });
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
         });
 
         expect(result.current.internal_execAgentRuntime).toHaveBeenCalled();
       });
-    });
-  });
 
-  describe('regenerateUserMessage', () => {
-    it('should trigger user message regeneration', async () => {
-      const messages = [
-        createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user', content: 'test' }),
-        createMockMessage({ id: TEST_IDS.MESSAGE_ID, role: 'assistant' }),
-      ];
+      it('should work when sending from home page (activeAgentId is empty but context.agentId exists)', async () => {
+        const { result } = renderHook(() => useChatStore());
 
-      setupStoreWithMessages(messages);
-
-      const switchMessageBranchSpy = vi.fn().mockResolvedValue(undefined);
-      const internalTraceSpy = vi.fn();
-
-      act(() => {
-        useChatStore.setState({
-          internal_traceMessage: internalTraceSpy,
-          switchMessageBranch: switchMessageBranchSpy,
-          internal_shouldUseRAG: vi.fn().mockReturnValue(false),
+        // Simulate home page state where activeAgentId is empty
+        act(() => {
+          useChatStore.setState({
+            activeAgentId: '',
+            activeTopicId: undefined,
+          });
         });
-      });
 
-      const { result } = renderHook(() => useChatStore());
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
 
-      await act(async () => {
-        await result.current.regenerateUserMessage(TEST_IDS.USER_MESSAGE_ID);
-      });
-
-      expect(switchMessageBranchSpy).toHaveBeenCalledWith(TEST_IDS.USER_MESSAGE_ID, 1);
-      expect(result.current.internal_execAgentRuntime).toHaveBeenCalledWith(
-        expect.objectContaining({
-          parentMessageId: TEST_IDS.USER_MESSAGE_ID,
-          parentMessageType: 'user',
-        }),
-      );
-      expect(internalTraceSpy).toHaveBeenCalled();
-    });
-
-    it('should not regenerate when already regenerating', async () => {
-      const { result } = renderHook(() => useChatStore());
-
-      act(() => {
-        useChatStore.setState({
-          regeneratingIds: [TEST_IDS.USER_MESSAGE_ID],
-          internal_execAgentRuntime: vi.fn(),
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            // Pass agentId via context (simulating home page sending to inbox)
+            context: createTestContext('inbox-agent-id'),
+          });
         });
+
+        // Should use agentId from context to get agent config
+        expect(sendMessageInServerSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentId: 'inbox-agent-id',
+            newAssistantMessage: expect.objectContaining({
+              model: expect.any(String),
+              provider: expect.any(String),
+            }),
+          }),
+          expect.any(AbortController),
+        );
+        expect(result.current.internal_execAgentRuntime).toHaveBeenCalled();
       });
-
-      await act(async () => {
-        await result.current.regenerateUserMessage(TEST_IDS.USER_MESSAGE_ID);
-      });
-
-      expect(result.current.internal_execAgentRuntime).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('regenerateAssistantMessage', () => {
-    it('should trigger assistant message regeneration', async () => {
-      const messages = [
-        createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
-        createMockMessage({
-          id: TEST_IDS.MESSAGE_ID,
-          role: 'assistant',
-          parentId: TEST_IDS.USER_MESSAGE_ID,
-        }),
-      ];
-
-      setupStoreWithMessages(messages);
-
-      act(() => {
-        useChatStore.setState({
-          internal_traceMessage: vi.fn(),
-          switchMessageBranch: vi.fn(),
-        });
-      });
-
-      const { result } = renderHook(() => useChatStore());
-
-      await act(async () => {
-        await result.current.regenerateAssistantMessage(TEST_IDS.MESSAGE_ID);
-      });
-
-      expect(result.current.internal_execAgentRuntime).toHaveBeenCalledWith(
-        expect.objectContaining({
-          parentMessageId: TEST_IDS.USER_MESSAGE_ID,
-          parentMessageType: 'user',
-        }),
-      );
-      expect(result.current.internal_traceMessage).toHaveBeenCalled();
     });
 
-    it('should not regenerate when already regenerating', async () => {
-      const { result } = renderHook(() => useChatStore());
+    describe('group chat supervisor metadata', () => {
+      it('should pass isSupervisor metadata when agentId matches supervisorAgentId', async () => {
+        const { result } = renderHook(() => useChatStore());
 
-      act(() => {
-        useChatStore.setState({
-          regeneratingIds: [TEST_IDS.MESSAGE_ID],
-          internal_execAgentRuntime: vi.fn(),
+        // Mock agentGroup store to return a group with specific supervisorAgentId
+        vi.spyOn(agentGroupStore, 'getChatGroupStoreState').mockReturnValue({
+          groupMap: {
+            'test-group-id': {
+              id: 'test-group-id',
+              supervisorAgentId: 'supervisor-agent-id',
+            },
+          },
+        } as any);
+
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: {
+              agentId: 'supervisor-agent-id',
+              groupId: 'test-group-id',
+              topicId: null,
+              threadId: null,
+            },
+          });
         });
+
+        // Should pass isSupervisor metadata when agentId matches supervisorAgentId
+        expect(sendMessageInServerSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            groupId: 'test-group-id',
+            newAssistantMessage: expect.objectContaining({
+              metadata: { isSupervisor: true },
+            }),
+          }),
+          expect.any(AbortController),
+        );
       });
 
-      await act(async () => {
-        await result.current.regenerateAssistantMessage(TEST_IDS.MESSAGE_ID);
-      });
+      it('should NOT pass isSupervisor metadata when agentId is a sub-agent (not supervisor)', async () => {
+        const { result } = renderHook(() => useChatStore());
 
-      expect(result.current.internal_execAgentRuntime).not.toHaveBeenCalled();
-    });
-  });
+        // Mock agentGroup store - sub-agent-id does NOT match supervisorAgentId
+        vi.spyOn(agentGroupStore, 'getChatGroupStoreState').mockReturnValue({
+          groupMap: {
+            'test-group-id': {
+              id: 'test-group-id',
+              supervisorAgentId: 'supervisor-agent-id', // Different from sub-agent-id
+            },
+          },
+        } as any);
 
-  describe('delAndRegenerateMessage', () => {
-    it('should delete message then regenerate', async () => {
-      const messages = [
-        createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
-        createMockMessage({
-          id: TEST_IDS.MESSAGE_ID,
-          role: 'assistant',
-          parentId: TEST_IDS.USER_MESSAGE_ID,
-        }),
-      ];
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
 
-      setupStoreWithMessages(messages);
-
-      act(() => {
-        useChatStore.setState({
-          regenerateAssistantMessage: vi.fn(),
-          deleteMessage: vi.fn(),
-          internal_traceMessage: vi.fn(),
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: {
+              agentId: 'sub-agent-id',
+              groupId: 'test-group-id',
+              topicId: 'topic-id',
+              threadId: 'thread-id',
+            },
+          });
         });
+
+        // Should NOT pass isSupervisor metadata since agentId doesn't match supervisorAgentId
+        expect(sendMessageInServerSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            groupId: 'test-group-id',
+            newAssistantMessage: expect.objectContaining({
+              metadata: undefined,
+            }),
+          }),
+          expect.any(AbortController),
+        );
       });
 
-      const { result } = renderHook(() => useChatStore());
+      it('should pass isSupervisor metadata when isSupervisor is explicitly set in context', async () => {
+        const { result } = renderHook(() => useChatStore());
 
-      await act(async () => {
-        await result.current.delAndRegenerateMessage(TEST_IDS.MESSAGE_ID);
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: {
+              agentId: 'supervisor-agent-id',
+              isSupervisor: true,
+              topicId: null,
+              threadId: null,
+            },
+          });
+        });
+
+        // Should pass isSupervisor metadata when explicitly set in context
+        expect(sendMessageInServerSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            newAssistantMessage: expect.objectContaining({
+              metadata: { isSupervisor: true },
+            }),
+          }),
+          expect.any(AbortController),
+        );
       });
 
-      expect(result.current.regenerateAssistantMessage).toHaveBeenCalledWith(
-        TEST_IDS.MESSAGE_ID,
-        expect.objectContaining({ skipTrace: true }),
-      );
-      expect(result.current.deleteMessage).toHaveBeenCalledWith(TEST_IDS.MESSAGE_ID);
-      expect(result.current.internal_traceMessage).toHaveBeenCalled();
+      it('should NOT pass isSupervisor metadata for regular agent chat (no groupId)', async () => {
+        const { result } = renderHook(() => useChatStore());
+
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: createTestContext(),
+          });
+        });
+
+        // Should NOT pass isSupervisor metadata for regular agent chat
+        expect(sendMessageInServerSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            newAssistantMessage: expect.objectContaining({
+              metadata: undefined,
+            }),
+          }),
+          expect.any(AbortController),
+        );
+      });
     });
   });
 });

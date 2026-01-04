@@ -40,14 +40,76 @@ export function parse(messages: Message[], messageGroups?: MessageGroupMetadata[
   const flatList = transformer.flatten(messages);
 
   // Convert messageMap from Map to plain object for serialization
+  // Clean up metadata for assistant messages with tools
   const messageMapObj: Record<string, Message> = {};
+  const usagePerformanceFields = new Set([
+    'acceptedPredictionTokens',
+    'cost',
+    'duration',
+    'inputAudioTokens',
+    'inputCacheMissTokens',
+    'inputCachedTokens',
+    'inputCitationTokens',
+    'inputImageTokens',
+    'inputTextTokens',
+    'inputWriteCacheTokens',
+    'latency',
+    'outputAudioTokens',
+    'outputImageTokens',
+    'outputReasoningTokens',
+    'outputTextTokens',
+    'rejectedPredictionTokens',
+    'totalInputTokens',
+    'totalOutputTokens',
+    'totalTokens',
+    'tps',
+    'ttft',
+  ]);
+
   helperMaps.messageMap.forEach((message, id) => {
-    messageMapObj[id] = message;
+    let processedMessage = message;
+
+    // Transform supervisor messages: convert role from 'assistant' to 'supervisor'
+    // This enables UI to render supervisor messages differently from regular assistant messages
+    // Note: context-engine has SupervisorRoleRestoreProcessor to restore role='assistant' before model API call
+    if (message.role === 'assistant' && message.metadata?.isSupervisor) {
+      processedMessage = { ...message, role: 'supervisor' as const };
+    }
+
+    // For assistant messages with tools, clean metadata to keep only usage/performance fields
+    if (
+      processedMessage.role === 'assistant' &&
+      processedMessage.tools &&
+      processedMessage.tools.length > 0 &&
+      processedMessage.metadata
+    ) {
+      const cleanedMetadata: Record<string, any> = {};
+      Object.entries(processedMessage.metadata).forEach(([key, value]) => {
+        if (usagePerformanceFields.has(key)) {
+          cleanedMetadata[key] = value;
+        }
+      });
+      messageMapObj[id] = {
+        ...processedMessage,
+        metadata: Object.keys(cleanedMetadata).length > 0 ? cleanedMetadata : undefined,
+      };
+    } else {
+      messageMapObj[id] = processedMessage;
+    }
+  });
+
+  // Transform supervisor messages in flatList
+  // For non-grouped supervisor messages (e.g., supervisor summary without tools)
+  const processedFlatList = flatList.map((msg) => {
+    if (msg.role === 'assistant' && msg.metadata?.isSupervisor) {
+      return { ...msg, role: 'supervisor' as const };
+    }
+    return msg;
   });
 
   return {
     contextTree,
-    flatList,
+    flatList: processedFlatList,
     messageMap: messageMapObj,
   };
 }
